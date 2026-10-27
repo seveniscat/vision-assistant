@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vision Assistant · 包装一致性全检</title>
+<style>
+  :root {
+    --bg: #f1f5f9; --card: #ffffff; --ink: #0f172a; --sub: #64748b;
+    --line: #e2e8f0; --blue: #2563eb; --green: #16a34a; --orange: #d97706; --red: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }
+  header { background: #0f172a; color: #fff; padding: 14px 24px; display: flex; align-items: baseline; gap: 12px; }
+  header b { font-size: 18px; } header span { color: #94a3b8; font-size: 13px; }
+  main { max-width: 1100px; margin: 20px auto; padding: 0 16px; display: grid; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card h2 { margin: 0 0 14px; font-size: 15px; color: var(--sub); font-weight: 600; }
+  label { display: block; font-size: 13px; color: var(--sub); margin: 10px 0 4px; }
+  input[type=text], input[type=password] { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 14px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; } .row > div { flex: 1; min-width: 220px; }
+  button { margin-top: 16px; background: var(--blue); color: #fff; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 14px; cursor: pointer; }
+  button:disabled { background: #94a3b8; cursor: not-allowed; }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; vertical-align: 1px; }
+  .b-gray { background: #e2e8f0; color: #475569; } .b-blue { background: #dbeafe; color: #1d4ed8; }
+  .b-green { background: #dcfce7; color: #15803d; } .b-orange { background: #fef3c7; color: #b45309; }
+  .b-red { background: #fee2e2; color: #b91c1c; }
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .chip { background: #f8fafc; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font-size: 13px; }
+  .chip b { font-size: 16px; }
+  .steps { display: grid; gap: 6px; font-size: 13px; }
+  .step { display: flex; justify-content: space-between; padding: 6px 10px; background: #f8fafc; border-radius: 6px; }
+  .error { margin-top: 10px; padding: 10px 12px; background: #fee2e2; color: #991b1b; border-radius: 6px; font-size: 13px; white-space: pre-wrap; }
+  canvas { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; }
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--sub); font-weight: 600; }
+  .hidden { display: none; }
+  .radio { display: inline-flex; gap: 6px; align-items: center; margin-right: 18px; font-size: 14px; color: var(--ink); }
+</style>
+</head>
+<body>
+<header><b>Vision Assistant</b><span>包装一致性全检 · C端演示（OCR + IP 图文一致性）</span></header>
+<main>
+
+  <section class="card">
+    <h2>① 检测配置</h2>
+    <div class="row">
+      <div>
+        <label>API Key</label>
+        <input type="password" id="apiKey" placeholder="X-API-Key（未配置鉴权时留空）">
+      </div>
+      <div>
+        <label>项目编号 bizno（IP 标准库）</label>
+        <input type="text" id="bizno" placeholder="如 customer-a">
+      </div>
+    </div>
+    <label>图片来源</label>
+    <span class="radio"><input type="radio" name="src" value="file" checked>上传文件</span>
+    <span class="radio"><input type="radio" name="src" value="url">图片 URL</span>
+    <div id="fileBox"><input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/bmp"></div>
+    <div id="urlBox" class="hidden"><input type="text" id="url" placeholder="http://内网图床/package.png"></div>
+    <button id="runBtn">运行一致性全检</button>
+  </section>
+
+  <section class="card hidden" id="progressCard">
+    <h2>② 任务进度 <span class="badge b-blue" id="taskBadge">pending</span></h2>
+    <div class="steps" id="steps"></div>
+    <div class="error hidden" id="errorBox"></div>
+  </section>
+
+  <section class="card hidden" id="resultCard">
+    <h2>③ 检测结果 <span id="overallBadge"></span></h2>
+    <div class="chips" id="chips"></div>
+    <canvas id="canvas"></canvas>
+    <table>
+      <thead><tr><th>印刷名称</th><th>归因角色</th><th>识别角色</th><th>相似度</th><th>判定</th><th>图文一致</th></tr></thead>
+      <tbody id="regionRows"></tbody>
+    </table>
+  </section>
+
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const apiKey = $("apiKey");
+apiKey.value = localStorage.getItem("va_key") || "";
+apiKey.onchange = () => localStorage.setItem("va_key", apiKey.value.trim());
+
+document.querySelectorAll('input[name=src]').forEach((r) => {
+  r.onchange = () => {
+    $("fileBox").classList.toggle("hidden", r.value !== "file" || !r.checked);
+    $("urlBox").classList.toggle("hidden", r.value !== "url" || !r.checked);
+  };
+});
+
+const VERDICT = { match: ["b-green", "match"], mismatch: ["b-red", "mismatch"], low_confidence: ["b-orange", "低置信"] };
+const OVERALL = { pass: ["b-green", "✅ 通过"], review: ["b-orange", "⚠️ 需人工复核"], fail: ["b-red", "❌ 不通过"] };
+const REGION_COLOR = { match: "#16a34a", mismatch: "#dc2626", low_confidence: "#d97706" };
+
+function showError(text) {
+  $("progressCard").classList.remove("hidden");
+  const box = $("errorBox");
+  box.textContent = text;
+  box.classList.remove("hidden");
+  $("runBtn").disabled = false;
+}
+
+function headers() { return apiKey.value.trim() ? { "X-API-Key": apiKey.value.trim() } : {}; }
+
+async function run() {
+  const bizno = $("bizno").value.trim();
+  if (!bizno) { showError("请填写项目编号 bizno"); return; }
+  const useFile = document.querySelector('input[name=src]:checked').value === "file";
+  const fd = new FormData();
+  fd.append("params", JSON.stringify({ bizno }));
+  if (useFile) {
+    if (!$("file").files.length) { showError("请选择包装图片"); return; }
+    fd.append("image", $("file").files[0]);
+  } else {
+    const url = $("url").value.trim();
+    if (!url) { showError("请填写图片 URL"); return; }
+    fd.append("image_url", url);
+  }
+
+  $("runBtn").disabled = true;
+  $("progressCard").classList.remove("hidden");
+  $("resultCard").classList.add("hidden");
+  $("errorBox").classList.add("hidden");
+  $("steps").innerHTML = "";
+  setBadge($("taskBadge"), ["b-blue", "提交中…"]);
+
+  try {
+    const resp = await fetch("/api/v1/recipes/ip-consistency-full/run", { method: "POST", headers: headers(), body: fd });
+    const body = await resp.json();
+    if (!resp.ok) { showError(`[${body.error?.code || resp.status}] ${body.error?.message || "请求失败"}`); return; }
+    poll(body.task_id);
+  } catch (err) {
+    showError("网络错误: " + err.message);
+  }
+}
+
+function setBadge(el, [cls, text]) { el.className = "badge " + cls; el.textContent = text; }
+
+async function poll(taskId) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 15 * 60 * 1000) {
+    let task;
+    try {
+      const resp = await fetch(`/api/v1/tasks/${taskId}`, { headers: headers() });
+      task = await resp.json();
+      if (!resp.ok) { showError(`[${task.error?.code || resp.status}] ${task.error?.message || "查询失败"}`); return; }
+    } catch (err) { showError("网络错误: " + err.message); return; }
+
+    const map = { pending: ["b-gray", "排队中"], running: ["b-blue", "执行中"], done: ["b-green", "完成"], error: ["b-red", "失败"] };
+    setBadge($("taskBadge"), map[task.status] || ["b-gray", task.status]);
+    $("steps").innerHTML = (task.steps || [])
+      .map((s) => `<div class="step"><span>${s.name} ${s.status === "ok" ? "✓" : "✗ " + (s.detail?.error || "")}</span><span>${s.elapsed_ms} ms</span></div>`)
+      .join("");
+
+    if (task.status === "done") { renderResult(task.result); return; }
+    if (task.status === "error") {
+      const e = task.error || {};
+      showError(`[${e.code || "ERROR"}] ${e.message || "任务失败"}${e.provider ? "（下游: " + e.provider + "）" : ""}`);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  showError("轮询超时（15 分钟），请稍后在任务列表中查询");
+}
+
+function renderResult(result) {
+  $("resultCard").classList.remove("hidden");
+  const s = result.summary;
+  setBadge($("overallBadge"), OVERALL[s.overall] || ["b-gray", s.overall]);
+  const chip = (label, value) => `<div class="chip">${label}<br><b>${value}</b></div>`;
+  $("chips").innerHTML =
+    chip("形象区域", s.regions_total) +
+    chip("已配名称", s.regions_paired) +
+    chip("match", s.verdicts?.match ?? 0) +
+    chip("mismatch", s.verdicts?.mismatch ?? 0) +
+    chip("低置信", s.verdicts?.low_confidence ?? 0) +
+    chip("图文错位", s.name_inconsistent?.length ?? 0) +
+    chip("OCR 文本框", s.ocr_texts_passed ?? 0);
+
+  $("regionRows").innerHTML = (result.ip?.regions || []).map((r) => {
+    const [cls, text] = VERDICT[r.verdict] || ["b-gray", r.verdict];
+    const nc = r.name_consistent === null || r.name_consistent === undefined ? "－" : r.name_consistent ? "✓" : "✗";
+    return `<tr><td>${r.printed_name ?? "－"}</td><td>${r.matched_role ?? "－"}</td><td>${r.role_name ?? "－"}</td>` +
+           `<td>${(r.similarity ?? 0).toFixed(3)}</td><td><span class="badge ${cls}">${text}</span></td><td>${nc}</td></tr>`;
+  }).join("");
+
+  drawCanvas(result);
+  $("runBtn").disabled = false;
+}
+
+function loadImage(result) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    const useFile = document.querySelector('input[name=src]:checked').value === "file";
+    if (useFile && $("file").files.length) img.src = URL.createObjectURL($("file").files[0]);
+    else if (result.ocr?.image_meta && $("url").value.trim()) img.src = $("url").value.trim();
+    else resolve(null);
+  });
+}
+
+async function drawCanvas(result) {
+  const meta = result.image_meta || { width: 1200, height: 900 };
+  const canvas = $("canvas"), ctx = canvas.getContext("2d");
+  canvas.width = meta.width; canvas.height = meta.height;
+  ctx.fillStyle = "#f8fafc"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const img = await loadImage(result);
+  if (img) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  // OCR 文本框（蓝色细框；坐标基于裁白边后的图，需加 crop 偏移）
+  const crop = result.ocr?.image_meta?.crop;
+  const [ox, oy] = crop ? [crop[0], crop[1]] : [0, 0];
+  ctx.strokeStyle = "#3b82f6";
+  ctx.lineWidth = Math.max(1, canvas.width / 800);
+  ctx.font = `${Math.max(12, canvas.width / 70)}px sans-serif`;
+  for (const item of result.ocr?.items || []) {
+    const [x1, y1, x2, y2] = item.bbox;
+    ctx.strokeRect(x1 + ox, y1 + oy, x2 - x1, y2 - y1);
+    const label = item.text || item.content || item.type;
+    ctx.fillStyle = "rgba(59,130,246,.85)";
+    ctx.fillRect(x1 + ox, Math.max(0, y1 + oy - 18), ctx.measureText(label).width + 8, 16);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, x1 + ox + 4, Math.max(12, y1 + oy - 6));
+  }
+
+  // IP 形象区域（按判定着色，粗框 + 角色标签）
+  ctx.lineWidth = Math.max(3, canvas.width / 300);
+  for (const r of result.ip?.regions || []) {
+    const b = r.bbox;
+    const x1 = b.x1 * canvas.width, y1 = b.y1 * canvas.height;
+    const w = (b.x2 - b.x1) * canvas.width, h = (b.y2 - b.y1) * canvas.height;
+    ctx.strokeStyle = REGION_COLOR[r.verdict] || "#64748b";
+    ctx.strokeRect(x1, y1, w, h);
+    const label = `${r.printed_name ?? "?"} → ${r.role_name ?? "?"} (${(r.similarity ?? 0).toFixed(2)})`;
+    ctx.font = `bold ${Math.max(14, canvas.width / 55)}px sans-serif`;
+    ctx.fillStyle = REGION_COLOR[r.verdict] || "#64748b";
+    ctx.fillRect(x1, Math.max(0, y1 - 24), ctx.measureText(label).width + 10, 22);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, x1 + 5, Math.max(16, y1 - 8));
+  }
+}
+
+$("runBtn").onclick = run;
+</script>
+</body>
+</html>
